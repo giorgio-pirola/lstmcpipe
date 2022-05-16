@@ -32,7 +32,10 @@ def generate_tree(base_dir, working_dir, nfiles):
 
 
 def generate_test_prod5trans80(
-    working_dir='/fefs/aswg/workspace/lstmcpipe/data/mc/', nfiles=5, path_to_config_file='.', overwrite=True
+    working_dir='/fefs/aswg/workspace/lstmcpipe/data/mc/',
+    nfiles=5, 
+    path_to_config_file=f'test_prod5trans80_{date.today()}.yaml',
+    overwrite=True
 ):
     base_dir = '/fefs/aswg/workspace/lstmcpipe/data/test_data/mc/DL0/20200629_prod5_trans_80/'
     working_dir = os.path.join(working_dir, 'DL0/20200629_prod5_trans_80/')
@@ -44,16 +47,19 @@ def generate_test_prod5trans80(
         working_dir, '{data_level}/20200629_prod5_trans_80/{particle}/{zenith}/south_pointing/{prod_id}'
     )
     pc.generate()
-    pc.save_yml(os.path.join(path_to_config_file, f'test_prod5trans80_{date.today()}.yaml'), overwrite=overwrite)
+    pc.save_yml(path_to_config_file, overwrite=overwrite)
 
 
 def generate_test_allsky(
     working_dir='/fefs/aswg/workspace/lstmcpipe/data/mc/',
     nfiles=5,
-    path_to_config_file='.',
+    path_to_config_file=f'test_AllSky_{date.today()}.yaml',
     decs=['dec_4822', 'dec_931'],
     overwrite=True,
 ):
+    """
+    returns 
+    """
     allsky_train_base_dir = '/home/georgios.voutsinas/ws/AllSky'
     allsky_test_base_dir = '/home/georgios.voutsinas/ws/AllSky'
 
@@ -75,7 +81,7 @@ def generate_test_allsky(
             working_dir, pc.test_configs[dec].testing_dir.replace(allsky_test_base_dir, 'DL0/AllSky/')
         )
     pc.generate()
-    pc.save_yml(os.path.join(path_to_config_file, f'test_AllSky_{date.today()}.yaml'), overwrite=overwrite)
+    pc.save_yml(path_to_config_file, overwrite=overwrite)
 
 
 if __name__ == '__main__':
@@ -84,7 +90,7 @@ if __name__ == '__main__':
 
     parser.add_argument('prod_type', type=str, help='prod5trans80 or allsky')
     parser.add_argument('--nfiles', type=int, default=5, help='Number of files')
-    parser.add_argument('--path_config_file', type=Path, default='.', help='Path to save the corresponding config file')
+    parser.add_argument('--config_file_dir', type=Path, default='.', help='Path to save the corresponding config files')
     parser.add_argument(
         '--working_dir',
         type=Path,
@@ -96,8 +102,10 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     if args.prod_type == 'prod5trans80':
-        generate_test_prod5trans80(args.working_dir, args.nfiles, args.path_config_file)
+        config_file_path = Path(args.path_config_file, f'test_prod5trans80_{date.today()}.yaml')
+        generate_test_prod5trans80(args.working_dir, args.nfiles, config_file_path)
     elif args.prod_type == 'allsky':
-        generate_test_allsky(args.working_dir, args.nfiles, args.path_config_file)
+        config_file_path = Path(args.path_config_file, f'test_AllSky_{date.today()}.yaml')
+        generate_test_allsky(args.working_dir, args.nfiles, config_file_path)
     else:
         raise NotImplementedError("Unknown prod type")
