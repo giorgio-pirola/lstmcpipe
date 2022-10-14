@@ -1,20 +1,13 @@
 #!/usr/bin/env python
 
-import os
 import logging
 from pathlib import Path
-from lstmcpipe.workflow_management import save_log_to_file
-
+from ..utils import save_log_to_file, SbatchLstMCStage
 
 log = logging.getLogger(__name__)
 
 
-def batch_dl2_to_sensitivity(
-    dict_paths,
-    job_ids_from_dl1_dl2,
-    batch_config,
-    logs,
-):
+def batch_dl2_to_sensitivity(dict_paths, job_ids_from_dl1_dl2, batch_config, logs):
     """
     Batches the dl2_to_sensitivity stage (`stages.script_dl2_to_sensitivity` based in the pyIRF iib) once the
     dl1_to_dl2 stage had finished.
@@ -37,44 +30,35 @@ def batch_dl2_to_sensitivity(
     jobid_for_check: str
         Comma-separated jobids batched in the current stage
     """
-    log.info("==== START {} ====".format("batch mc_dl2_to_sensitivity"))
-
+    log.info('==== START batch mc_dl2_to_sensitivity ====')
     log_dl2_to_sensitivity = {}
     jobid_for_check = []
     debug_log = {}
-
     for paths in dict_paths:
         job_logs, jobid = dl2_to_sensitivity(
             paths["input"],
             paths["output"],
             batch_configuration=batch_config,
             wait_jobs_dl1_dl2=job_ids_from_dl1_dl2,
-            slurm_options=paths.get("slurm_options", None),
+            extra_slurm_options=paths.get("extra_slurm_options", None),
         )
+
         jobid_for_check.append(jobid)
         log_dl2_to_sensitivity.update(job_logs)
         debug_log[jobid] = (
-            f"Job_ids from the dl2_to_sensitivity stage and the plot_irfs script that "
-            f"depends on the dl1_to_dl2 stage job_ids; {job_ids_from_dl1_dl2}"
+            f"Job_ids from the dl2_to_sensitivity stage and the plot_irfs script that depends on the "
+            f"dl1_to_dl2 stage job_ids; {job_ids_from_dl1_dl2} "
         )
 
     jobid_for_check = ",".join(jobid_for_check)
-
     save_log_to_file(log_dl2_to_sensitivity, logs["log_file"], "dl2_to_sensitivity")
+
     save_log_to_file(debug_log, logs["debug_file"], "dl2_to_sensitivity")
-
-    log.info("==== END {} ====".format("batch mc_dl2_to_sensitivity"))
-
+    log.info('==== END batch mc_dl2_to_sensitivity ====')
     return jobid_for_check
 
 
-def dl2_to_sensitivity(
-    input_paths,
-    output,
-    batch_configuration,
-    wait_jobs_dl1_dl2,
-    slurm_options=None,
-):
+def dl2_to_sensitivity(input_paths, output, batch_configuration, wait_jobs_dl1_dl2, extra_slurm_options=None):
     """
     Function to run the `script_dl2_to_sensitivity` for the gamma (and the different gamma offsets) and gamma-diffuse
     particles.
@@ -89,7 +73,7 @@ def dl2_to_sensitivity(
         sbatch commands
     wait_jobs_dl1_dl2: str
         Comma-separated string with the jobs (dependency) to wait for before launching the cmd
-    slurm_options: str
+    extra_slurm_options: dict
         Extra slurm options to be passed to the sbatch command
 
     Returns
@@ -100,58 +84,44 @@ def dl2_to_sensitivity(
         String with job_ids batched by the dl2_to_sensitivity script
 
     """
-    log_dl2_to_sensitivity = {}
-    jobids_dl2_to_sensitivity = []
-
     g_file = input_paths["gamma_file"]
     p_file = input_paths["proton_file"]
     e_file = input_paths["electron_file"]
+    cmd_sens = f"lstmcpipe_dl2_to_sensitivity -g {g_file} -p {p_file} -e {e_file} -o {output}"
 
-    source_env = batch_configuration["source_environment"]
-    slurm_account = batch_configuration["slurm_account"]
-
-    # TODO Move the base commands into scripts so that we can use subprocess properly(makes splitting the string easier)
-    base_cmd_sens = f"lstmcpipe_dl2_to_sensitivity -g {g_file} -p {p_file} -e {e_file} -o {output}"
-
-    jobo_sens = Path(output).parent.joinpath("job_dl2_to_sensitivity.o")
-    jobe_sens = Path(output).parent.joinpath("job_dl2_to_sensitivity.e")
-
-    cmd_sens = "sbatch --parsable -p short --mem 32G"
-    if slurm_account != "":
-        cmd_sens += f" -A {slurm_account}"
-    if wait_jobs_dl1_dl2 is not None:
-        cmd_sens += f" --dependency=afterok:{wait_jobs_dl1_dl2}"
-    cmd_sens += f" -e {jobe_sens} -o {jobo_sens}" f' -J dl2_sens --wrap="{source_env} {base_cmd_sens}"'
-
-    job_id_dl2_sens = os.popen(cmd_sens).read().strip("\n")
-    log_dl2_to_sensitivity.update({job_id_dl2_sens: cmd_sens})
-    jobids_dl2_to_sensitivity.append(job_id_dl2_sens)
-
-    log.info(f"Output dir of sensitivity file: {output}")
-    log.info(f"Submitted batch job {job_id_dl2_sens}")
-
-    # Create plot from sensitivity files
-    base_cmd_plot = f'lstmcpipe_plot_irfs -f {output} -o {output.replace(".fits.gz", ".png")}'
-    jobe_plot = Path(output).parent.joinpath("job_plot_sensitivity-%j.e")
-    jobo_plot = Path(output).parent.joinpath("job_plot_sensitivity-%j.o")
-
-    cmd_plot = "sbatch --parsable"
-    if slurm_options is not None:
-        cmd_plot += f" {slurm_options}"
-    else:
-        cmd_plot += " -p short"
-    if slurm_account != "":
-        cmd_plot += f" -A {slurm_account}"
-    cmd_plot += (
-        f" --dependency=afterok:{job_id_dl2_sens} -e {jobe_plot} -o {jobo_plot}"
-        f' -J dl2_sens_plot --wrap="export MPLBACKEND=Agg; {source_env} {base_cmd_plot}"'
+    sbatch_dl2_sens = SbatchLstMCStage(
+        "dl2_sens",
+        wrap_command=cmd_sens,
+        slurm_error=Path(output).parent.joinpath("job_dl2_to_sensitivity.e"),
+        slurm_output=Path(output).parent.joinpath("job_dl2_to_sensitivity.o"),
+        slurm_dependencies=wait_jobs_dl1_dl2,
+        extra_slurm_options=extra_slurm_options,
+        slurm_account=batch_configuration["slurm_account"],
+        source_environment=batch_configuration["source_environment"],
     )
 
-    job_id_plot_sens = os.popen(cmd_plot).read().strip("\n")
-    log_dl2_to_sensitivity.update({job_id_plot_sens: cmd_plot})
-    jobids_dl2_to_sensitivity.append(job_id_plot_sens)
+    job_id_dl2_sens = sbatch_dl2_sens.submit()
+    log_dl2_to_sensitivity = {job_id_dl2_sens: job_id_dl2_sens.slurm_command}
+    jobids_dl2_to_sensitivity = [job_id_dl2_sens]
+    log.info(f"Output dir of sensitivity file: {output}")
+    log.info(f"Submitted batch job {job_id_dl2_sens}")
+    cmd_plot_sens = f'lstmcpipe_plot_irfs -f {output} -o {output.replace(".fits.gz", ".png")}'
 
+    sbatch_plot_sens = SbatchLstMCStage(
+        "dl2_sens_plot",
+        wrap_command=cmd_plot_sens,
+        slurm_error=Path(output).parent.joinpath("job_plot_sensitivity-%j.e"),
+        slurm_output=Path(output).parent.joinpath("job_plot_sensitivity-%j.o"),
+        slurm_dependencies=job_id_dl2_sens,
+        extra_slurm_options=extra_slurm_options,
+        slurm_account=batch_configuration["slurm_account"],
+        source_environment=batch_configuration["source_environment"],
+        backend="export MPLBACKEND=Agg; ",
+    )
+
+    job_id_plot_sens = sbatch_plot_sens.submit()
+    log_dl2_to_sensitivity[job_id_plot_sens] = sbatch_plot_sens.slurm_command
+    jobids_dl2_to_sensitivity.append(job_id_plot_sens)
     log.info(f"Output dir of sensitivity plots: {output}")
     log.info(f"Submitted batch job {job_id_plot_sens}")
-
     return log_dl2_to_sensitivity, ",".join(jobids_dl2_to_sensitivity)

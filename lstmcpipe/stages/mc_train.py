@@ -1,11 +1,10 @@
 #!/usr/bin/env python
 
-import os
 import shutil
 import logging
 from pathlib import Path
-from lstmcpipe.workflow_management import save_log_to_file
-from lstmcpipe.io.data_management import check_and_make_dir_without_verification
+from ..utils import save_log_to_file, SbatchLstMCStage
+from ..io.data_management import check_and_make_dir_without_verification
 
 
 log = logging.getLogger(__name__)
@@ -56,7 +55,7 @@ def batch_train_pipe(dict_paths, jobids_from_merge, config_file, batch_config, l
             config_file=config_file,
             batch_configuration=batch_config,
             wait_jobs_dl1=jobids_from_merge,
-            slurm_options=paths.get("slurm_options", None),
+            extra_slurm_options=paths.get("extra_slurm_options", None),
         )
 
         log_train.update(job_logs)
@@ -71,7 +70,7 @@ def batch_train_pipe(dict_paths, jobids_from_merge, config_file, batch_config, l
     save_log_to_file(log_train, logs["log_file"], workflow_step="train_pipe")
     save_log_to_file(debug_train, logs["debug_file"], workflow_step="train_pipe")
 
-    log.info("==== END {} ====".format("batch mc_train_workflow"))
+    log.info("==== END batch mc_train_workflow ====")
 
     return jobid_for_dl1_to_dl2
 
@@ -112,27 +111,25 @@ def batch_plot_rf_features(
 
     log.info("==== START {} ====".format("batch plot RF features importance"))
 
-    source_env = batch_configuration["source_environment"]
-    slurm_account = batch_configuration["slurm_account"]
-
     for path in dict_paths:
         models_dir = path["output"]
 
-        jobe = Path(models_dir).joinpath("job_plot_rf_feat_importance.e").resolve().as_posix()
-        jobo = Path(models_dir).joinpath(models_dir, "job_plot_rf_feat_importance.o").resolve().as_posix()
+        cmd = f"lstmcpipe_plot_models_importance {models_dir} -cf {config_file}"
 
-        batch_cmd = f"lstmcpipe_plot_models_importance {models_dir} -cf {config_file}"
-
-        slurm_cmd = "sbatch --parsable --mem=16G "
-        if slurm_account != "":
-            slurm_cmd += f" -A {slurm_account}"
-        slurm_cmd += (
-            f" --dependency=afterok:{train_jobid} -e {jobe} -o {jobo} "
-            f' -J RF_importance --wrap="export MPLBACKEND=Agg; {source_env} {batch_cmd}"'
+        sbatch_rf_feat = SbatchLstMCStage(
+            "RF_importance",
+            wrap_command=cmd,
+            slurm_error=Path(models_dir).joinpath("job_plot_rf_feat_importance.e").resolve().as_posix(),
+            slurm_output=Path(models_dir).joinpath(models_dir, "job_plot_rf_feat_importance.o").resolve().as_posix(),
+            slurm_dependencies=train_jobid,
+            slurm_account=batch_configuration["slurm_account"],
+            source_environment=batch_configuration["source_environment"],
+            backend="export MPLBACKEND=Agg;",
         )
-        jobid = os.popen(slurm_cmd).read().strip("\n")
 
-        log_rf_feat[jobid] = slurm_cmd
+        jobid = sbatch_rf_feat.submit()
+
+        log_rf_feat.update({jobid: sbatch_rf_feat.slurm_command})
         log_debug[jobid] = "Single job_id to plot RF feature s importance"
         all_jobs_plot_rf_feat.append(jobid)
 
@@ -154,7 +151,7 @@ def train_pipe(
     config_file=None,
     batch_configuration='',
     wait_jobs_dl1=None,
-    slurm_options=None,
+    extra_slurm_options=None,
 ):
     """
     Train RF from MC DL1 data (onsite LaPalma cluster)
@@ -176,7 +173,7 @@ def train_pipe(
     wait_jobs_dl1 : str
         A string (of chained job_ids separated by ',' and without spaces between each element), containing
         all the job_ids of the merging stage
-    slurm_options: str
+    extra_slurm_options: dict
         Extra slurm options to be passed to the sbatch command
 
     Returns
@@ -191,38 +188,26 @@ def train_pipe(
     """
     log_train = {}
 
-    source_environment = batch_configuration["source_environment"]
-    slurm_account = batch_configuration["slurm_account"]
-
     log.info("Models will be placed in {}".format(models_dir))
     check_and_make_dir_without_verification(models_dir)
 
-    cmd = (
-        f" {source_environment} lstchain_mc_trainpipe --fg {gamma_dl1_train_file}"
-        f" --fp {proton_dl1_train_file} -o {models_dir}"
-    )
-
+    cmd = f"lstchain_mc_trainpipe --fg {gamma_dl1_train_file} --fp {proton_dl1_train_file} -o {models_dir}"
     if config_file is not None:
         cmd = cmd + " -c {}".format(config_file)
 
-    jobo = Path(models_dir).joinpath("train_job.o").resolve().as_posix()
-    jobe = Path(models_dir).joinpath("train_job.e").resolve().as_posix()
+    sbatch_train_pipe = SbatchLstMCStage(
+        "train_pipe",
+        wrap_command=cmd,
+        slurm_error=Path(models_dir).joinpath("train_job.e").resolve().as_posix(),
+        slurm_output=Path(models_dir).joinpath("train_job.o").resolve().as_posix(),
+        slurm_dependencies=wait_jobs_dl1,
+        extra_slurm_options=extra_slurm_options,
+        slurm_account=batch_configuration["slurm_account"],
+        source_environment=batch_configuration["source_environment"],
+    )
 
-    # 'sbatch --parsable --dependency=afterok:{wait_ids_proton_and_gammas} -e {jobe} -o {jobo} --wrap="{base_cmd}"'
-    batch_cmd = "sbatch --parsable"
-    # For training, we'd need at least 32G (AllSky) and long queue, user can change this value, though.
-    if slurm_options is not None:
-        batch_cmd += f" {slurm_options}"
-    else:
-        batch_cmd += " -p long --mem=32G "
-    if slurm_account != "":
-        batch_cmd += f" -A {slurm_account}"
-    if wait_jobs_dl1 is not None:
-        batch_cmd += " --dependency=afterok:" + wait_jobs_dl1
-    batch_cmd += f' -J train_pipe -e {jobe} -o {jobo} --wrap="{cmd}" '
-
-    jobid_train = os.popen(batch_cmd).read().strip("\n")
-    log_train[jobid_train] = batch_cmd
+    jobid_train = sbatch_train_pipe.submit()
+    log_train.update({jobid_train: sbatch_train_pipe.slurm_command})
 
     log.info(f"Submitted batch job {jobid_train}")
 
